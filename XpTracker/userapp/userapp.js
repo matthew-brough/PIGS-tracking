@@ -22,11 +22,21 @@
 // ---------------------------------------------------------------------------
 
 const PIGS_JOB            = 'pigs_job';
-// Server URL is derived from the page origin so it works with any tunnel URL
-// automatically. When running locally for testing, set SERVER_ORIGIN manually.
+const MIN_REPORT_INTERVAL = 5_000;      // 5 s → server allows 12 per 60 s
+const POLL_INTERVAL       = 10_000;     // ms between data re-requests
+
 const SERVER_ORIGIN = window.location.origin !== 'null'
     ? window.location.origin
-    : '';          // empty string → relative paths (same host)
+    : '';
+
+const SESSION_TOKEN = window.__XP_TOKEN__ || '';
+
+/** Keys this app actually consumes – used for targeted cache requests. */
+const WATCHED_KEYS = [
+    'job', 'name', 'user_id',
+    'exp_hunting_skill', 'exp_business_business', 'exp_player_player',
+    'PartyTier', 'pigs_client_state',
+];
 
 // ---------------------------------------------------------------------------
 // State
@@ -40,24 +50,21 @@ const state = {
     heistStreak: 0,
     wasInHeist:  false,
     wasInParty:  false,
-    // Current XP readings from the game client
-    xp: {
-        hunting:  null,
-        business: null,
-        player:   null,
-    },
-    // Last values successfully sent to the server (undefined = never reported)
-    reported: {
-        hunting:  undefined,
-        business: undefined,
-        player:   undefined,
-    },
-    lastReportAt: null,
-    lastStatus:   'Waiting…',
+
+    /** Current XP readings from the game client. */
+    xp:       { hunting: null, business: null, player: null },
+    /** Last values successfully sent to the server. */
+    reported: { hunting: undefined, business: undefined, player: undefined },
+
+    lastReportAt:      null,
+    pendingReport:     false,
+    reportingDisabled: false,   // true after 401/403 – stops further reports
+    lastStatus:        'Waiting…',
+    statusType:        'neutral',
 };
 
 // ---------------------------------------------------------------------------
-// Helpers
+// XP helpers
 // ---------------------------------------------------------------------------
 
 function setXP(group, rawValue) {
@@ -67,84 +74,118 @@ function setXP(group, rawValue) {
 
 /** True if any XP value differs from what was last successfully reported. */
 function xpChanged() {
-    return state.xp.hunting  !== state.reported.hunting  ||
-           state.xp.business !== state.reported.business ||
-           state.xp.player   !== state.reported.player;
+    return (
+        state.xp.hunting  !== state.reported.hunting  ||
+        state.xp.business !== state.reported.business ||
+        state.xp.player   !== state.reported.player
+    );
 }
 
 // ---------------------------------------------------------------------------
-// Message handler – receives data from the Transport Tycoon game client
+// Message parsing – extract game data into local state
 // ---------------------------------------------------------------------------
 
-window.addEventListener('message', (event) => {
+/** Map of game-data key → handler that applies the value to state. */
+const DATA_HANDLERS = {
+    name:                   (v) => { state.playerName = v; },
+    user_id:                (v) => { state.playerId = String(v); },
+    job:                    (v) => { state.job = v; },
+    exp_hunting_skill:      (v) => setXP('hunting', v),
+    exp_business_business:  (v) => setXP('business', v),
+    exp_player_player:      (v) => setXP('player', v),
+    PartyTier:              (v) => { state.tier = Number(v) || 0; },
+};
+
+/**
+ * Process the `pigs_client_state` sub-object: update tier, track heist
+ * transitions and manage the streak counter.
+ */
+function applyPigsClientState(ps) {
+    if (!ps || typeof ps !== 'object') return;
+
+    // Tier (partyData takes precedence over PartyTier shortcut)
+    if (ps.partyData?.tier != null) {
+        state.tier = Number(ps.partyData.tier) || 0;
+    }
+
+    const nowInHeist = Boolean(ps.inHeist);
+    const nowInParty = Boolean(ps.inParty);
+
+    // Heist just ended → count as a completed run
+    if (state.wasInHeist && !nowInHeist) state.heistStreak++;
+    // Left the party entirely → reset streak
+    if (state.wasInParty && !nowInParty) state.heistStreak = 0;
+
+    state.wasInHeist = nowInHeist;
+    state.wasInParty = nowInParty;
+}
+
+/**
+ * Top-level message listener – receives data from the Transport Tycoon
+ * game client and delegates to the appropriate handlers.
+ */
+function handleMessage(event) {
     const msg = event.data;
-    // The game wraps all key-value pairs inside a `data` property
     if (!msg || typeof msg.data !== 'object' || msg.data === null) return;
 
     const d = msg.data;
 
-    // ── Identity ──────────────────────────────────────────────────────────
-    if ('name'    in d) state.playerName = d.name;
-    // user_id is numeric, stable and server-assigned – use it as the canonical id
-    if ('user_id' in d) state.playerId   = String(d.user_id);
-    if ('job'     in d) state.job        = d.job;
-
-    // ── XP ────────────────────────────────────────────────────────────────
-    if ('exp_hunting_skill'     in d) setXP('hunting',  d.exp_hunting_skill);
-    if ('exp_business_business' in d) setXP('business', d.exp_business_business);
-    if ('exp_player_player'     in d) setXP('player',   d.exp_player_player);
-
-    // ── Tier (top-level shortcut) ──────────────────────────────────────────
-    if ('PartyTier' in d) state.tier = Number(d.PartyTier) || 0;
-
-    // ── PIGS client state ─────────────────────────────────────────────────
-    if ('pigs_client_state' in d) {
-        const ps = d.pigs_client_state;
-        if (ps && typeof ps === 'object') {
-            // Tier (partyData takes precedence over PartyTier shortcut)
-            if (ps.partyData && ps.partyData.tier != null) {
-                state.tier = Number(ps.partyData.tier) || 0;
-            }
-
-            // Heist streak: increment on inHeist true → false transition
-            const nowInHeist = Boolean(ps.inHeist);
-            const nowInParty = Boolean(ps.inParty);
-
-            if (state.wasInHeist && !nowInHeist) {
-                // Heist just ended – count as a completed run
-                state.heistStreak++;
-            }
-            // Reset streak if player has left the party entirely
-            if (state.wasInParty && !nowInParty) {
-                state.heistStreak = 0;
-            }
-
-            state.wasInHeist = nowInHeist;
-            state.wasInParty = nowInParty;
-        }
+    // Apply simple key → state mappings
+    for (const [key, handler] of Object.entries(DATA_HANDLERS)) {
+        if (key in d) handler(d[key]);
     }
 
-    // ── Trigger a report whenever XP changes while on the PIGS job ────────
+    // Complex sub-object
+    if ('pigs_client_state' in d) applyPigsClientState(d.pigs_client_state);
+
+    // Trigger a report whenever XP changes while on the PIGS job
     if (state.job === PIGS_JOB && state.playerId && xpChanged()) {
-        sendReport();
+        scheduleReport();
     }
 
     renderUI();
-});
+}
+
+window.addEventListener('message', handleMessage);
 
 // ---------------------------------------------------------------------------
-// Report (fires on XP change, not on a fixed interval)
+// Reporting (throttled – at most once per MIN_REPORT_INTERVAL)
 // ---------------------------------------------------------------------------
+
+function scheduleReport() {
+    if (state.pendingReport || state.reportingDisabled) return;
+
+    const now  = Date.now();
+    const last = state.lastReportAt ? state.lastReportAt.getTime() : 0;
+    const wait = Math.max(0, MIN_REPORT_INTERVAL - (now - last));
+
+    state.pendingReport = true;
+    setTimeout(async () => {
+        state.pendingReport = false;
+        if (state.job === PIGS_JOB && state.playerId && xpChanged()) {
+            await sendReport();
+        }
+    }, wait);
+}
+
+/** HTTP status → { message, fatal } mapping for error responses. */
+const ERROR_RESPONSES = {
+    401: { message: 'Session expired – reload page', fatal: true },
+    403: { message: 'Invalid session – reload page', fatal: true },
+    429: { message: 'Rate limited – slowing down',   fatal: false },
+    413: { message: 'Payload too large',              fatal: false },
+};
 
 async function sendReport() {
     const payload = {
         player_id:    state.playerId,
         player_name:  state.playerName,
-        tier:         state.tier,
+        tier:         state.tier || null,
         hunting_xp:   state.xp.hunting,
         business_xp:  state.xp.business,
         player_xp:    state.xp.player,
         heist_streak: state.heistStreak,
+        token:        SESSION_TOKEN,
     };
 
     try {
@@ -155,14 +196,11 @@ async function sendReport() {
         });
 
         if (res.ok) {
-            // Only update the snapshot on success so a network blip causes a retry
-            state.reported.hunting  = state.xp.hunting;
-            state.reported.business = state.xp.business;
-            state.reported.player   = state.xp.player;
+            Object.assign(state.reported, { ...state.xp });
             state.lastReportAt = new Date();
-            setStatus('OK');
+            setStatus('OK', 'ok');
         } else {
-            setStatus(`Error ${res.status}`);
+            handleErrorResponse(res);
         }
     } catch (err) {
         console.error('[XpTracker] POST /report failed:', err);
@@ -172,36 +210,71 @@ async function sendReport() {
     renderUI();
 }
 
-function setStatus(msg) {
+async function handleErrorResponse(res) {
+    const known = ERROR_RESPONSES[res.status];
+    if (known) {
+        setStatus(known.message);
+        if (known.fatal) state.reportingDisabled = true;
+        return;
+    }
+    // Fallback – try to extract server error detail
+    let detail = '';
+    try { detail = (await res.json()).error || ''; } catch (_) { /* noop */ }
+
+    if (res.status === 422) {
+        setStatus(`Bad data: ${detail}`);
+    } else {
+        setStatus(`Error ${res.status}: ${detail || 'unknown'}`);
+    }
+}
+
+function setStatus(msg, type = 'error') {
     state.lastStatus = msg;
+    state.statusType = type;
 }
 
 // ---------------------------------------------------------------------------
 // UI rendering
 // ---------------------------------------------------------------------------
 
+/** DOM ID → state value mapping for plain text cells. */
+function getTextBindings() {
+    return {
+        'player-name':  state.playerName,
+        'tier-value':   state.tier || '--',
+        'streak-value': state.heistStreak,
+        'last-report':  state.lastReportAt
+                            ? state.lastReportAt.toLocaleTimeString()
+                            : 'Never',
+    };
+}
+
 function renderUI() {
     const isPigs = state.job === PIGS_JOB;
 
     // Job badge
     const badge = document.getElementById('job-badge');
-    badge.textContent  = state.job || '--';
-    badge.className    = 'badge ' + (isPigs ? 'badge-active' : 'badge-inactive');
+    badge.textContent = state.job || '--';
+    badge.className   = 'badge ' + (isPigs ? 'badge-active' : 'badge-inactive');
 
-    // Player info
-    setText('player-name',  state.playerName);
-    setText('tier-value',   state.tier  || '--');
-    setText('streak-value', state.heistStreak);
+    // Simple text bindings
+    for (const [id, value] of Object.entries(getTextBindings())) {
+        setText(id, value);
+    }
 
     // XP rows
     renderXP('hunt-xp',   state.xp.hunting);
     renderXP('biz-xp',    state.xp.business);
     renderXP('player-xp', state.xp.player);
 
-    // Footer
-    setText('last-report',
-        state.lastReportAt ? state.lastReportAt.toLocaleTimeString() : 'Never');
-    setText('report-status', state.lastStatus);
+    // Status
+    const statusEl = document.getElementById('report-status');
+    if (statusEl) {
+        statusEl.textContent = state.lastStatus;
+        statusEl.className   = 'value muted'
+            + (state.statusType === 'error' ? ' status-error' : '')
+            + (state.statusType === 'ok'    ? ' status-ok'    : '');
+    }
 }
 
 function renderXP(id, value) {
@@ -217,26 +290,9 @@ function setText(id, value) {
 // Boot
 // ---------------------------------------------------------------------------
 
-/** Keys this app actually consumes – used for targeted cache requests. */
-const WATCHED_KEYS = [
-    'job',
-    'name',
-    'user_id',
-    'exp_hunting_skill',
-    'exp_business_business',
-    'exp_player_player',
-    'PartyTier',
-    'pigs_client_state',
-];
-
-/** Request only the keys we care about to avoid triggering full-cache lag. */
 function requestData() {
     window.parent.postMessage({ type: 'getNamedData', keys: WATCHED_KEYS }, '*');
 }
 
-// Flush the relevant cache keys on startup (triggers initial report if already on job)
 requestData();
-
-// Periodically re-request data so we catch any values we might have missed.
-// Reports are sent by the message handler whenever XP changes, not here.
-setInterval(requestData, 10_000);
+setInterval(requestData, POLL_INTERVAL);
