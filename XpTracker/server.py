@@ -149,11 +149,34 @@ INSERT INTO pigs_reports
 VALUES ($1, $2, $3, $4, $5, $6)
 """
 
+_LAST_REPORT = """\
+SELECT tier, hunting_xp, business_xp, player_xp, heist_streak
+  FROM pigs_reports
+ WHERE player_id = $1
+ ORDER BY reported_at DESC
+ LIMIT 1
+"""
 
-async def _persist_report(pool: asyncpg.Pool, rpt) -> None:
-    """Write the validated report to the database in a single transaction."""
+
+async def _persist_report(pool: asyncpg.Pool, rpt) -> bool:
+    """Write the validated report to the database.
+
+    Returns ``True`` if a new row was inserted, ``False`` if it was a
+    duplicate of the most recent report for the same player.
+    """
     async with pool.acquire() as conn, conn.transaction():
         await conn.execute(_UPSERT_PLAYER, rpt.player_id, rpt.player_name)
+
+        last = await conn.fetchrow(_LAST_REPORT, rpt.player_id)
+        if last is not None and (
+            last["tier"] == rpt.tier
+            and last["hunting_xp"] == rpt.hunting_xp
+            and last["business_xp"] == rpt.business_xp
+            and last["player_xp"] == rpt.player_xp
+            and last["heist_streak"] == rpt.heist_streak
+        ):
+            return False
+
         await conn.execute(
             _INSERT_REPORT,
             rpt.player_id,
@@ -163,6 +186,7 @@ async def _persist_report(pool: asyncpg.Pool, rpt) -> None:
             rpt.player_xp,
             rpt.heist_streak,
         )
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -234,17 +258,23 @@ async def report(request: Request) -> Response:
         return _json({"error": "rate limited"}, 429)
 
     # ── Persist ───────────────────────────────────────────────────────
-    await _persist_report(request.app.state.pool, rpt)
+    is_new = await _persist_report(request.app.state.pool, rpt)
 
-    logger.info(
-        "report | player=%s tier=%s streak=%d hunt=%s biz=%s player=%s",
-        rpt.player_id,
-        rpt.tier,
-        rpt.heist_streak,
-        rpt.hunting_xp,
-        rpt.business_xp,
-        rpt.player_xp,
-    )
+    if is_new:
+        logger.info(
+            "report | player=%s tier=%s streak=%d hunt=%s biz=%s player=%s",
+            rpt.player_id,
+            rpt.tier,
+            rpt.heist_streak,
+            rpt.hunting_xp,
+            rpt.business_xp,
+            rpt.player_xp,
+        )
+    else:
+        logger.debug(
+            "report | duplicate skipped for player=%s",
+            rpt.player_id,
+        )
     return _json({"status": "ok"})
 
 

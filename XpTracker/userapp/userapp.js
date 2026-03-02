@@ -161,9 +161,12 @@ function scheduleReport() {
 
     state.pendingReport = true;
     setTimeout(async () => {
-        state.pendingReport = false;
-        if (state.job === PIGS_JOB && state.playerId && xpChanged()) {
-            await sendReport();
+        try {
+            if (state.job === PIGS_JOB && state.playerId && xpChanged()) {
+                await sendReport();
+            }
+        } finally {
+            state.pendingReport = false;
         }
     }, wait);
 }
@@ -188,6 +191,11 @@ async function sendReport() {
         token:        SESSION_TOKEN,
     };
 
+    // Optimistically snapshot reported values so concurrent xpChanged()
+    // checks see them immediately and don't trigger duplicate sends.
+    const prevReported = { ...state.reported };
+    Object.assign(state.reported, { ...state.xp });
+
     try {
         const res = await fetch(`${SERVER_ORIGIN}/report`, {
             method:  'POST',
@@ -196,13 +204,15 @@ async function sendReport() {
         });
 
         if (res.ok) {
-            Object.assign(state.reported, { ...state.xp });
             state.lastReportAt = new Date();
             setStatus('OK', 'ok');
         } else {
+            // Roll back optimistic update so the data is retried.
+            Object.assign(state.reported, prevReported);
             handleErrorResponse(res);
         }
     } catch (err) {
+        Object.assign(state.reported, prevReported);
         console.error('[XpTracker] POST /report failed:', err);
         setStatus('Network error');
     }
