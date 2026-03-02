@@ -22,6 +22,8 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:${POSTGRES_PORT}/${POSTGRES_DB}
+      APP_PORT: ${APP_PORT}
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
     ports:
       - "${APP_PORT}:${APP_PORT}"        # optional – direct LAN access alongside the tunnel
     depends_on:
