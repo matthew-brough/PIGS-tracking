@@ -1,0 +1,42 @@
+services:
+
+  # ── PostgreSQL ────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── XpTracker server ─────────────────────────────────────────────────────
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:${POSTGRES_PORT}/${POSTGRES_DB}
+    ports:
+      - "${APP_PORT}:${APP_PORT}"        # optional – direct LAN access alongside the tunnel
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # ── Cloudflare Tunnel ─────────────────────────────────────────────────────
+  # Named tunnel → set CLOUDFLARE_TUNNEL_TOKEN in .env
+  #   The token is obtained from: Cloudflare Zero Trust → Networks → Tunnels.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - app
+
+volumes:
+  pgdata:

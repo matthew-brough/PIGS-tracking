@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>PIGS XP Tracker</title>
+    <link rel="stylesheet" href="userapp.css">
+</head>
+<body>
+    <div id="tracker">
+        <div class="header">
+            <span class="title">PIGS XP Tracker</span>
+            <span id="job-badge" class="badge badge-inactive">--</span>
+        </div>
+
+        <div class="row">
+            <span class="label">Player</span>
+            <span id="player-name" class="value">--</span>
+        </div>
+        <div class="row">
+            <span class="label">Tier</span>
+            <span id="tier-value" class="value">--</span>
+        </div>
+        <div class="row">
+            <span class="label">Heist Streak</span>
+            <span id="streak-value" class="value">0</span>
+        </div>
+
+        <div class="divider"></div>
+        <div class="section-title">XP</div>
+
+        <div class="row">
+            <span class="label">Hunting</span>
+            <span id="hunt-xp" class="value xp-value">--</span>
+        </div>
+        <div class="row">
+            <span class="label">Business</span>
+            <span id="biz-xp" class="value xp-value">--</span>
+        </div>
+        <div class="row">
+            <span class="label">Player</span>
+            <span id="player-xp" class="value xp-value">--</span>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="row footer-row">
+            <span class="label">Last report</span>
+            <span id="last-report" class="value muted">Never</span>
+        </div>
+        <div class="row footer-row">
+            <span class="label">Status</span>
+            <span id="report-status" class="value muted">Waiting…</span>
+        </div>
+    </div>
+
+    <script src="userapp.js"></script>
+</body>
+</html>
