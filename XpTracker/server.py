@@ -105,7 +105,8 @@ def _setup_discord_logging() -> None:
     # Attach to root logger (catches most things)
     logging.getLogger().addHandler(handler)
     # Uvicorn sets propagate=False on its loggers, so attach directly
-    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+    external_loggers = ("uvicorn",)
+    for name in external_loggers:
         logging.getLogger(name).addHandler(handler)
     _discord_handler = handler
 
