@@ -47,7 +47,7 @@ const state = {
     playerName:  'Unknown',
     job:         null,
     tier:        0,
-    heistStreak: 0,
+    streak: 0,
     wasInHeist:  false,
     wasInParty:  false,
 
@@ -108,16 +108,14 @@ function applyPigsClientState(ps) {
         state.tier = Number(ps.partyData.tier) || 0;
     }
 
-    const nowInHeist = Boolean(ps.inHeist);
-    const nowInParty = Boolean(ps.inParty);
+    // Set streak from received data if present
+    if (typeof ps.streak === 'number') {
+        state.streak = ps.streak;
+    }
 
-    // Heist just ended → count as a completed run
-    if (state.wasInHeist && !nowInHeist) state.heistStreak++;
-    // Left the party entirely → reset streak
-    if (state.wasInParty && !nowInParty) state.heistStreak = 0;
-
-    state.wasInHeist = nowInHeist;
-    state.wasInParty = nowInParty;
+    // Optionally, update wasInHeist/wasInParty if still needed elsewhere
+    state.wasInHeist = Boolean(ps.inHeist);
+    state.wasInParty = Boolean(ps.inParty);
 }
 
 /**
@@ -187,7 +185,7 @@ async function sendReport() {
         hunting_xp:   state.xp.hunting,
         business_xp:  state.xp.business,
         player_xp:    state.xp.player,
-        heist_streak: state.heistStreak,
+        heist_streak: state.streak,
         token:        SESSION_TOKEN,
     };
 
@@ -252,7 +250,7 @@ function getTextBindings() {
     return {
         'player-name':  state.playerName,
         'tier-value':   state.tier || '--',
-        'streak-value': state.heistStreak,
+        'streak-value': state.streak,
         'last-report':  state.lastReportAt
                             ? state.lastReportAt.toLocaleTimeString()
                             : 'Never',
