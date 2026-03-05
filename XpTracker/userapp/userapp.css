@@ -59,7 +59,7 @@ body {
 #tracker {
     pointer-events: auto;
     position: fixed;
-    top: 20px;
+    top: 240px;
     right: 20px;
     width: 240px;
     background: var(--clr-bg);

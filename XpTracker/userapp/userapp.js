@@ -1,29 +1,11 @@
-/**
- * PIGS XP Tracker – userapp.js
- *
- * Listens to Transport Tycoon userapp message events, extracts PIGS job
- * data and periodically POSTs XP deltas + heist streak to the server.
- *
- * Data keys consumed (from event.data.data):
- *   job                    – current job string; only report when "pigs"
- *   name                   – player display name
- *   user_id                – numeric user id (canonical player_id)
- *   exp_hunting_skill      – hunting XP total
- *   exp_business_business  – business XP total
- *   exp_player_player      – player XP total
- *   PartyTier              – party / heist tier (top-level shortcut)
- *   pigs_client_state      – full PIGS state object (inHeist, partyData…)
- */
-
 'use strict';
 
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
-const PIGS_JOB            = 'pigs_job';
-const MIN_REPORT_INTERVAL = 5_000;      // 5 s → server allows 12 per 60 s
-const POLL_INTERVAL       = 10_000;     // ms between data re-requests
+const PIGS_JOB = "pigs_job";
+const MIN_REPORT_INTERVAL = 5 * 1000; // ms
 
 const SERVER_ORIGIN = window.location.origin !== 'null'
     ? window.location.origin
@@ -31,11 +13,25 @@ const SERVER_ORIGIN = window.location.origin !== 'null'
 
 const SESSION_TOKEN = window.__XP_TOKEN__ || '';
 
-/** Keys this app actually consumes – used for targeted cache requests. */
+const ERROR_RESPONSES = {
+    401: { message: 'Session expired – reload page', fatal: true },
+    403: { message: 'Invalid session – reload page', fatal: true },
+    413: { message: 'Payload too large',              fatal: false },
+    422: { message: 'Invalid data sent',              fatal: true },
+    429: { message: 'Rate limited – slowing down',   fatal: false },
+
+};
+
 const WATCHED_KEYS = [
-    'job', 'name', 'user_id',
-    'exp_hunting_skill', 'exp_business_business', 'exp_player_player',
-    'PartyTier', 'pigs_client_state',
+    "job", 
+    "name", 
+    "user_id", 
+    "exp_hunting_skill", 
+    "exp_business_business", 
+    "exp_player_player", 
+    "PartyTier", 
+    "pigs_client_state_inParty",
+    "pigs_client_state_streak",
 ];
 
 // ---------------------------------------------------------------------------
@@ -43,25 +39,23 @@ const WATCHED_KEYS = [
 // ---------------------------------------------------------------------------
 
 const state = {
-    playerId:    null,
-    playerName:  'Unknown',
-    job:         null,
-    tier:        0,
+    user_id: null,
+    name: null,
+    job: null,
+    tier: 0,
     streak: 0,
-    wasInHeist:  false,
-    wasInParty:  false,
-
-    /** Current XP readings from the game client. */
-    xp:       { hunting: null, business: null, player: null },
-    /** Last values successfully sent to the server. */
-    reported: { hunting: undefined, business: undefined, player: undefined },
-
-    lastReportAt:      null,
-    pendingReport:     false,
-    reportingDisabled: false,   // true after 401/403 – stops further reports
-    lastStatus:        'Waiting…',
-    statusType:        'neutral',
-};
+    xp: {
+        hunting: null,
+        business: null,
+        player: null
+    },
+    last_report_at: null,
+    pending_report: false,
+    reportingDisabled: false,
+    last_status: "Waiting...",
+    statusType: "neutral",
+    InParty: false,
+}
 
 // ---------------------------------------------------------------------------
 // XP helpers
@@ -72,73 +66,59 @@ function setXP(group, rawValue) {
     if (Number.isFinite(value)) state.xp[group] = value;
 }
 
-/** True if any XP value differs from what was last successfully reported. */
-function xpChanged() {
-    return (
-        state.xp.hunting  !== state.reported.hunting  ||
-        state.xp.business !== state.reported.business ||
-        state.xp.player   !== state.reported.player
-    );
-}
-
 // ---------------------------------------------------------------------------
 // Message parsing – extract game data into local state
 // ---------------------------------------------------------------------------
 
-/** Map of game-data key → handler that applies the value to state. */
-const DATA_HANDLERS = {
-    name:                   (v) => { state.playerName = v; },
-    user_id:                (v) => { state.playerId = String(v); },
-    job:                    (v) => { state.job = v; },
-    exp_hunting_skill:      (v) => setXP('hunting', v),
-    exp_business_business:  (v) => setXP('business', v),
-    exp_player_player:      (v) => setXP('player', v),
-    PartyTier:              (v) => { state.tier = Number(v) || 0; },
-};
-
-/**
- * Process the `pigs_client_state` sub-object: update tier, track heist
- * transitions and manage the streak counter.
- */
-function applyPigsClientState(ps) {
-    if (!ps || typeof ps !== 'object') return;
-
-    // Tier (partyData takes precedence over PartyTier shortcut)
-    if (ps.partyData?.tier != null) {
-        state.tier = Number(ps.partyData.tier) || 0;
-    }
-
-    // Set streak from received data if present
-    if (typeof ps.streak === 'number') {
-        state.streak = ps.streak;
-    }
-
-    // Optionally, update wasInHeist/wasInParty if still needed elsewhere
-    state.wasInHeist = Boolean(ps.inHeist);
-    state.wasInParty = Boolean(ps.inParty);
+function isObject(value) {
+    return typeof value === 'object' && 
+    value !== null && 
+    !Array.isArray(value);
 }
 
-/**
- * Top-level message listener – receives data from the Transport Tycoon
- * game client and delegates to the appropriate handlers.
- */
+const DATA_HANDLERS = {
+    user_id: (v) => { state.user_id = v; },
+    name: (v) => { state.name = v; },
+    job: (v) => { state.job = v; },
+    PartyTier: (v) => { state.tier = v; },
+    pigs_client_state_streak: (v) => { state.streak = v; },
+    exp_hunting_skill: (v) => { setXP("hunting", v); },
+    exp_business_business: (v) => { setXP("business", v); },
+    exp_player_player: (v) => { setXP("player", v); },
+    pigs_client_state_inParty: (v) => { state.InParty = v; },
+
+}
+
 function handleMessage(event) {
     const msg = event.data;
-    if (!msg || typeof msg.data !== 'object' || msg.data === null) return;
+    if (typeof msg !== 'object' || msg === null) return;
+    console.debug("Received message:", msg);
+    const data = msg.data;
+    if (!isObject(data)) return;
 
-    const d = msg.data;
+    for (const key of WATCHED_KEYS) {
+        if (!(key in data)) continue;
 
-    // Apply simple key → state mappings
-    for (const [key, handler] of Object.entries(DATA_HANDLERS)) {
-        if (key in d) handler(d[key]);
-    }
+        if (!(key in DATA_HANDLERS)) {
+            console.warn(`No handler for key: ${key}`);
+            state.reportingDisabled = true;
+            setStatus(`Error: No handler for key: ${key}`, 'error');
+            continue;
+        }
+        console.log(`Handling key: ${key} with value: ${data[key]}`);
+        const handler = DATA_HANDLERS[key];
+        const value = data[key];
+        try {
+            handler(value);
+        } catch (err) {
+            console.error(`Error handling key: ${key}`, err);
+            state.reportingDisabled = true;
+            setStatus(`Error handling key: ${key} - ${err.message}`, 'error');
+        }
 
-    // Complex sub-object
-    if ('pigs_client_state' in d) applyPigsClientState(d.pigs_client_state);
-
-    // Trigger a report whenever XP changes while on the PIGS job
-    if (state.job === PIGS_JOB && state.playerId && xpChanged()) {
-        scheduleReport();
+        if (state.job === PIGS_JOB && state.user_id && key === 'pigs_client_state_streak') {
+            scheduleReport();
+        }
     }
 
     renderUI();
@@ -151,70 +131,57 @@ window.addEventListener('message', handleMessage);
 // ---------------------------------------------------------------------------
 
 function scheduleReport() {
-    if (state.pendingReport || state.reportingDisabled) return;
+    if (state.pending_report || state.reportingDisabled) {
+        console.debug("skipped, pending report: ", state.pending_report, "reporting disabled: ", state.reportingDisabled);
+        return;
+    }
+        
 
     const now  = Date.now();
     const last = state.lastReportAt ? state.lastReportAt.getTime() : 0;
     const wait = Math.max(0, MIN_REPORT_INTERVAL - (now - last));
 
-    state.pendingReport = true;
+    state.pending_report = true;
     setTimeout(async () => {
         try {
-            if (state.job === PIGS_JOB && state.playerId && xpChanged()) {
+            if (state.job === PIGS_JOB && state.user_id) {
                 await sendReport();
             }
         } finally {
-            state.pendingReport = false;
+            state.pending_report = false;
         }
     }, wait);
 }
 
-/** HTTP status → { message, fatal } mapping for error responses. */
-const ERROR_RESPONSES = {
-    401: { message: 'Session expired – reload page', fatal: true },
-    403: { message: 'Invalid session – reload page', fatal: true },
-    429: { message: 'Rate limited – slowing down',   fatal: false },
-    413: { message: 'Payload too large',              fatal: false },
-};
-
 async function sendReport() {
     const payload = {
-        player_id:    state.playerId,
-        player_name:  state.playerName,
-        tier:         state.tier || null,
-        hunting_xp:   state.xp.hunting,
-        business_xp:  state.xp.business,
-        player_xp:    state.xp.player,
+        player_id: state.user_id,
+        player_name: state.name,
+        tier: state.tier,
         heist_streak: state.streak,
-        token:        SESSION_TOKEN,
+        hunting_xp: state.xp.hunting,
+        business_xp: state.xp.business,
+        player_xp: state.xp.player,
+        token: SESSION_TOKEN,
     };
-
-    // Optimistically snapshot reported values so concurrent xpChanged()
-    // checks see them immediately and don't trigger duplicate sends.
-    const prevReported = { ...state.reported };
-    Object.assign(state.reported, { ...state.xp });
-
+    console.debug("Sending report:", payload);
     try {
         const res = await fetch(`${SERVER_ORIGIN}/report`, {
-            method:  'POST',
+            method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body:    JSON.stringify(payload),
+            body: JSON.stringify(payload)
         });
 
         if (res.ok) {
             state.lastReportAt = new Date();
-            setStatus('OK', 'ok');
+            setStatus("OK", 'ok');
         } else {
-            // Roll back optimistic update so the data is retried.
-            Object.assign(state.reported, prevReported);
             handleErrorResponse(res);
         }
     } catch (err) {
-        Object.assign(state.reported, prevReported);
         console.error('[XpTracker] POST /report failed:', err);
         setStatus('Network error');
     }
-
     renderUI();
 }
 
@@ -245,10 +212,9 @@ function setStatus(msg, type = 'error') {
 // UI rendering
 // ---------------------------------------------------------------------------
 
-/** DOM ID → state value mapping for plain text cells. */
 function getTextBindings() {
     return {
-        'player-name':  state.playerName,
+        'player-name':  state.name,
         'tier-value':   state.tier || '--',
         'streak-value': state.streak,
         'last-report':  state.lastReportAt
@@ -298,9 +264,6 @@ function setText(id, value) {
 // Boot
 // ---------------------------------------------------------------------------
 
-function requestData() {
+document.addEventListener('DOMContentLoaded', () => {
     window.parent.postMessage({ type: 'getNamedData', keys: WATCHED_KEYS }, '*');
-}
-
-requestData();
-setInterval(requestData, POLL_INTERVAL);
+});
