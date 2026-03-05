@@ -26,13 +26,16 @@ ACCEPTED_FIELDS = frozenset(
         "business_xp",
         "player_xp",
         "heist_streak",
+        "player_count",
+        "login",
         "token",
     }
 )
 
 TIER_RANGE = (1, 7)
 XP_RANGE = (0, 1_000_000_000)
-STREAK_RANGE = (0, 1_000)
+STREAK_RANGE = (0, 1_001)
+PLAYER_COUNT_RANGE = (1, 600)
 
 _PLAYER_ID_RE = re.compile(r"^\d{1,7}$")
 _PLAYER_NAME_MAX = 64
@@ -60,6 +63,8 @@ class ValidatedReport:
     business_xp: int | None
     player_xp: int | None
     heist_streak: int
+    player_count: int | None
+    login: bool
 
 
 class ValidationError(Exception):
@@ -156,8 +161,11 @@ def validate_report(data: Mapping[str, Any]) -> ValidatedReport:
         business_xp = int_in_range(data.get("business_xp"), *XP_RANGE)
         player_xp = int_in_range(data.get("player_xp"), *XP_RANGE)
         heist_streak = int_in_range(data.get("heist_streak"), *STREAK_RANGE) or 0
+        player_count = int_in_range(data.get("player_count"), *PLAYER_COUNT_RANGE)
     except ValueError as exc:
         raise ValidationError(f"invalid field: {exc}", status_code=422)
+
+    login = data.get("login") is True
 
     return ValidatedReport(
         player_id=player_id,
@@ -167,4 +175,6 @@ def validate_report(data: Mapping[str, Any]) -> ValidatedReport:
         business_xp=business_xp,
         player_xp=player_xp,
         heist_streak=heist_streak,
+        player_count=player_count,
+        login=login,
     )

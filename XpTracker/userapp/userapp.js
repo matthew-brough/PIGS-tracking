@@ -4,8 +4,8 @@
 // Configuration
 // ---------------------------------------------------------------------------
 
-console.log = function() {}
-console.debug = function() {}
+// console.log = function() {}
+// console.debug = function() {}
 
 const PIGS_JOB = "pigs_job";
 const MIN_REPORT_INTERVAL = 5 * 1000; // ms
@@ -17,10 +17,10 @@ const SERVER_ORIGIN = window.location.origin !== 'null'
 const SESSION_TOKEN = window.__XP_TOKEN__ || '';
 
 const ERROR_RESPONSES = {
+    400: { message: 'Invalid data sent',              fatal: true },
     401: { message: 'Session expired – reload page', fatal: true },
     403: { message: 'Invalid session – reload page', fatal: true },
     413: { message: 'Payload too large',              fatal: false },
-    422: { message: 'Invalid data sent',              fatal: true },
     429: { message: 'Rate limited – slowing down',   fatal: false },
 
 };
@@ -34,6 +34,8 @@ const WATCHED_KEYS = [
     "exp_player_player", 
     "PartyTier", 
     "pigs_client_state_inParty",
+    "pigs_client_state_memberCount",
+    "pigs_client_state_partyData_memberCount",
     "pigs_client_state_streak",
 ];
 
@@ -47,15 +49,16 @@ const state = {
     job: null,
     tier: 0,
     streak: 0,
+    player_count: 0,
     xp: {
         hunting: null,
         business: null,
         player: null
     },
-    last_report_at: null,
+    lastReportAt: null,
     pending_report: false,
     reportingDisabled: false,
-    last_status: "Waiting...",
+    lastStatus: "Waiting...",
     statusType: "neutral",
     InParty: false,
 }
@@ -85,6 +88,8 @@ const DATA_HANDLERS = {
     job: (v) => { state.job = v; },
     PartyTier: (v) => { state.tier = v; },
     pigs_client_state_streak: (v) => { state.streak = v; },
+    pigs_client_state_memberCount: (v) => { state.player_count = v; },
+    pigs_client_state_partyData_memberCount: (v) => { state.player_count = v; },
     exp_hunting_skill: (v) => { setXP("hunting", v); },
     exp_business_business: (v) => { setXP("business", v); },
     exp_player_player: (v) => { setXP("player", v); },
@@ -98,6 +103,12 @@ function handleMessage(event) {
     console.debug("Received message:", msg);
     const data = msg.data;
     if (!isObject(data)) return;
+
+    for (const [key, value] of Object.entries(data)) {
+        if (key.startsWith("pigs_client_state")) {
+            console.debug(`Key: ${key}, Value: ${value}`);
+        }
+    }
 
     for (const key of WATCHED_KEYS) {
         if (!(key in data)) continue;
@@ -120,7 +131,17 @@ function handleMessage(event) {
         }
 
         if (state.job === PIGS_JOB && state.user_id && key === 'pigs_client_state_streak') {
-            scheduleReport();
+            let ready = true;
+            for (const [key, value] of Object.entries(state)) {
+                if ((value === null || value === 0) && key !== 'streak' && key !== "lastReportAt") {
+                    console.debug(`Not ready for reporting, key: ${key}, value: ${value}`);
+                    ready = false;
+                    break;
+                }
+            }
+            if (ready) {
+                scheduleReport();
+            }
         }
     }
 
@@ -162,10 +183,12 @@ async function sendReport() {
         player_name: state.name,
         tier: state.tier,
         heist_streak: state.streak,
+        player_count: state.player_count,
         hunting_xp: state.xp.hunting,
         business_xp: state.xp.business,
         player_xp: state.xp.player,
         token: SESSION_TOKEN,
+        login: (state.lastReportAt === null) ? true : false,
     };
     console.debug("Sending report:", payload);
     try {
@@ -220,6 +243,7 @@ function getTextBindings() {
         'player-name':  state.name,
         'tier-value':   state.tier || '--',
         'streak-value': state.streak,
+        'player-count': state.playerCount || "1",
         'last-report':  state.lastReportAt
                             ? state.lastReportAt.toLocaleTimeString()
                             : 'Never',

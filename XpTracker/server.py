@@ -77,8 +77,9 @@ CREATE TABLE IF NOT EXISTS pigs_reports (
     business_xp     BIGINT,
     player_xp       BIGINT,
     heist_streak    SMALLINT,
+    player_count    SMALLINT,
     reported_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    new_session     BOOLEAN      NOT NULL DEFAULT FALSE
+    is_login        BOOLEAN      NOT NULL DEFAULT FALSE
 );
 
 CREATE INDEX IF NOT EXISTS pigs_reports_player_idx
@@ -144,36 +145,15 @@ ON CONFLICT (player_id) DO UPDATE
 
 _INSERT_REPORT = """\
 INSERT INTO pigs_reports
-    (player_id, tier, hunting_xp, business_xp, player_xp, heist_streak, new_session)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-"""
-
-_LAST_REPORT = """\
-SELECT tier, hunting_xp, business_xp, player_xp, heist_streak
-  FROM pigs_reports
- WHERE player_id = $1
- ORDER BY reported_at DESC
- LIMIT 1
+    (player_id, tier, hunting_xp, business_xp, player_xp, heist_streak, player_count, is_login)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 """
 
 
 async def _persist_report(pool: asyncpg.Pool, rpt) -> None:
-    """Write the validated report to the database.
-
-    Adds a new row to pigs_reports. If the new report is a duplicate of the most recent report for the same player, sets new_session=True on the inserted row, otherwise False.
-    """
+    """Write the validated report to the database."""
     async with pool.acquire() as conn, conn.transaction():
         await conn.execute(_UPSERT_PLAYER, rpt.player_id, rpt.player_name)
-
-        last = await conn.fetchrow(_LAST_REPORT, rpt.player_id)
-        is_duplicate = (
-            last is not None
-            and last["tier"] == rpt.tier
-            and last["hunting_xp"] == rpt.hunting_xp
-            and last["business_xp"] == rpt.business_xp
-            and last["player_xp"] == rpt.player_xp
-            and last["heist_streak"] == rpt.heist_streak
-        )
 
         await conn.execute(
             _INSERT_REPORT,
@@ -183,7 +163,8 @@ async def _persist_report(pool: asyncpg.Pool, rpt) -> None:
             rpt.business_xp,
             rpt.player_xp,
             rpt.heist_streak,
-            is_duplicate,
+            rpt.player_count,
+            rpt.login,
         )
 
 
@@ -259,13 +240,15 @@ async def report(request: Request) -> Response:
     # ── Persist ───────────────────────────────────────────────────────
     await _persist_report(request.app.state.pool, rpt)
     logger.info(
-        "report | player=%s tier=%s streak=%d hunt=%s biz=%s player=%s",
+        "report | player=%s tier=%s streak=%d count=%s hunt=%s biz=%s player=%s login=%s",
         rpt.player_id,
         rpt.tier,
         rpt.heist_streak,
+        rpt.player_count,
         rpt.hunting_xp,
         rpt.business_xp,
         rpt.player_xp,
+        rpt.login,
     )
     return _json({"status": "ok"})
 
