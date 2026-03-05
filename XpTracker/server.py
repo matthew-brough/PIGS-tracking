@@ -232,7 +232,8 @@ _TOKEN_ERROR_STATUS = {
 
 async def report(request: Request) -> Response:
     """Receive a timestamped XP snapshot from the PIGS NUI overlay."""
-
+    assert request.client
+    logger.debug("Received report request from %s", request.client.host)
     # ── Body size guard ───────────────────────────────────────────────
     body = await request.body()
     if len(body) > MAX_BODY_BYTES:
