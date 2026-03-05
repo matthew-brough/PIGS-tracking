@@ -52,13 +52,10 @@ logging.basicConfig(level=logging.INFO)
 DATABASE_URL = os.environ["DATABASE_URL"]
 DISCORD_WEBHOOK_URL: str | None = os.environ.get("DISCORD_WEBHOOK_URL")
 
-# Session token signing – random per process; tokens invalidate on restart
-# which is acceptable since game UI sessions are short-lived.
 SECRET_KEY: str = secrets.token_hex(32)
 _serializer = URLSafeTimedSerializer(SECRET_KEY)
 TOKEN_MAX_AGE = 24 * 60 * 60  # 24 hours
 
-# Module-level reference so lifespan can start/stop the handler
 _discord_handler: DiscordWebhookHandler | None = None
 
 # ---------------------------------------------------------------------------
@@ -80,7 +77,8 @@ CREATE TABLE IF NOT EXISTS pigs_reports (
     business_xp     BIGINT,
     player_xp       BIGINT,
     heist_streak    SMALLINT,
-    reported_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    reported_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    new_session     BOOLEAN      NOT NULL DEFAULT FALSE
 );
 
 CREATE INDEX IF NOT EXISTS pigs_reports_player_idx
@@ -146,8 +144,8 @@ ON CONFLICT (player_id) DO UPDATE
 
 _INSERT_REPORT = """\
 INSERT INTO pigs_reports
-    (player_id, tier, hunting_xp, business_xp, player_xp, heist_streak)
-VALUES ($1, $2, $3, $4, $5, $6)
+    (player_id, tier, hunting_xp, business_xp, player_xp, heist_streak, new_session)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 """
 
 _LAST_REPORT = """\
@@ -159,24 +157,23 @@ SELECT tier, hunting_xp, business_xp, player_xp, heist_streak
 """
 
 
-async def _persist_report(pool: asyncpg.Pool, rpt) -> bool:
+async def _persist_report(pool: asyncpg.Pool, rpt) -> None:
     """Write the validated report to the database.
 
-    Returns ``True`` if a new row was inserted, ``False`` if it was a
-    duplicate of the most recent report for the same player.
+    Adds a new row to pigs_reports. If the new report is a duplicate of the most recent report for the same player, sets new_session=True on the inserted row, otherwise False.
     """
     async with pool.acquire() as conn, conn.transaction():
         await conn.execute(_UPSERT_PLAYER, rpt.player_id, rpt.player_name)
 
         last = await conn.fetchrow(_LAST_REPORT, rpt.player_id)
-        if last is not None and (
-            last["tier"] == rpt.tier
+        is_duplicate = (
+            last is not None
+            and last["tier"] == rpt.tier
             and last["hunting_xp"] == rpt.hunting_xp
             and last["business_xp"] == rpt.business_xp
             and last["player_xp"] == rpt.player_xp
             and last["heist_streak"] == rpt.heist_streak
-        ):
-            return False
+        )
 
         await conn.execute(
             _INSERT_REPORT,
@@ -186,8 +183,8 @@ async def _persist_report(pool: asyncpg.Pool, rpt) -> bool:
             rpt.business_xp,
             rpt.player_xp,
             rpt.heist_streak,
+            is_duplicate,
         )
-        return True
 
 
 # ---------------------------------------------------------------------------
@@ -260,23 +257,16 @@ async def report(request: Request) -> Response:
         return _json({"error": "rate limited"}, 429)
 
     # ── Persist ───────────────────────────────────────────────────────
-    is_new = await _persist_report(request.app.state.pool, rpt)
-
-    if is_new:
-        logger.info(
-            "report | player=%s tier=%s streak=%d hunt=%s biz=%s player=%s",
-            rpt.player_id,
-            rpt.tier,
-            rpt.heist_streak,
-            rpt.hunting_xp,
-            rpt.business_xp,
-            rpt.player_xp,
-        )
-    else:
-        logger.debug(
-            "report | duplicate skipped for player=%s",
-            rpt.player_id,
-        )
+    await _persist_report(request.app.state.pool, rpt)
+    logger.info(
+        "report | player=%s tier=%s streak=%d hunt=%s biz=%s player=%s",
+        rpt.player_id,
+        rpt.tier,
+        rpt.heist_streak,
+        rpt.hunting_xp,
+        rpt.business_xp,
+        rpt.player_xp,
+    )
     return _json({"status": "ok"})
 
 
