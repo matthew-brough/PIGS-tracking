@@ -4,6 +4,9 @@
 // Configuration
 // ---------------------------------------------------------------------------
 
+console.log = function() {}
+console.debug = function() {}
+
 const PIGS_JOB = "pigs_job";
 const MIN_REPORT_INTERVAL = 5 * 1000; // ms
 
