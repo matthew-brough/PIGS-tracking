@@ -60,7 +60,7 @@ body {
     pointer-events: auto;
     position: fixed;
     top: 240px;
-    right: 20px;
+    left: 20px;
     width: 240px;
     background: var(--clr-bg);
     border: 1px solid var(--clr-border);
@@ -69,6 +69,8 @@ body {
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
     user-select: none;
+    will-change: top, left;
+    transition: width 0.3s ease, height 0.3s ease;
 }
 
 /* ── Header ─────────────────────────────────────────────────────────────── */
@@ -78,6 +80,12 @@ body {
     justify-content: space-between;
     align-items: center;
     margin-bottom: 8px;
+    cursor: move;
+    pointer-events: auto;
+}
+
+.header * {
+    pointer-events: none;
 }
 
 .title {
@@ -174,3 +182,44 @@ body {
 
 .status-error { color: var(--clr-error); }
 .status-ok    { color: var(--clr-ok); }
+
+/* ── Draggable Feature ──────────────────────────────────────────────────── */
+
+.dashboard-container {
+  position: fixed;
+  top: 20px;
+  left: 20px;
+  width: 280px;
+  background: rgba(15, 23, 35, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+  color: #ffffff;
+  z-index: 9999;
+  overflow: hidden;
+  will-change: transform;
+  transition: width 0.3s ease, height 0.3s ease;
+}
+
+.dashboard-container.horizontal {
+  width: 560px;
+  height: auto;
+}
+
+.dashboard-container.minimized {
+  height: 40px;
+  overflow: hidden;
+}
+
+.dashboard-container.horizontal.minimized {
+  height: 40px;
+  width: 560px;
+}
+
+.dashboard-header {
+  background: rgba(30, 40, 55, 0.8);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 8px 12px;
+  cursor: move;
+  user-select: none;
+}

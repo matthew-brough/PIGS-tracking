@@ -73,6 +73,102 @@ function setXP(group, rawValue) {
 }
 
 // ---------------------------------------------------------------------------
+// Draging Logic
+// ---------------------------------------------------------------------------
+
+// Dragging logic for the whole window
+let dragListenersAttached = false;
+let isDragging = false;
+let dragStartX = 0;
+let dragStartY = 0;
+let windowStartX = 0;
+let windowStartY = 0;
+
+function initializeDragging() {
+  const tracker = document.getElementById("tracker");
+  const header = tracker ? tracker.querySelector(".header") : null;
+  
+  if (!tracker || !header) return;
+  
+  const savedPosition = getSavedPosition();
+  if (savedPosition) {
+    tracker.style.left = Math.round(savedPosition.x) + "px";
+    tracker.style.top = Math.round(savedPosition.y) + "px";
+  }
+  
+  header.style.cursor = "move";
+  
+  // Drag event listeners
+  if (!dragListenersAttached) {
+    header.addEventListener("mousedown", startDragging);
+    document.addEventListener("mousemove", drag);
+    document.addEventListener("mouseup", stopDragging);
+    dragListenersAttached = true;
+  }
+}
+
+function startDragging(e) {
+  isDragging = true;
+  const tracker = document.getElementById("tracker");
+  
+  dragStartX = e.clientX;
+  dragStartY = e.clientY;
+  
+  const rect = tracker.getBoundingClientRect();
+  windowStartX = Math.round(rect.left);
+  windowStartY = Math.round(rect.top);
+  
+  e.preventDefault();
+}
+
+function drag(e) {
+  if (!isDragging) return;
+  
+  const tracker = document.getElementById("tracker");
+  const deltaX = e.clientX - dragStartX;
+  const deltaY = e.clientY - dragStartY;
+  
+  const newX = windowStartX + deltaX;
+  const newY = windowStartY + deltaY;
+  
+  const maxX = window.innerWidth - tracker.offsetWidth;
+  const maxY = window.innerHeight - tracker.offsetHeight;
+  
+  const boundedX = Math.round(Math.max(0, Math.min(newX, maxX)));
+  const boundedY = Math.round(Math.max(0, Math.min(newY, maxY)));
+  
+  tracker.style.left = boundedX + "px";
+  tracker.style.top = boundedY + "px";
+}
+
+function stopDragging() {
+  if (isDragging) {
+    isDragging = false;
+    savePosition();
+  }
+}
+
+function savePosition() {
+  const tracker = document.getElementById("tracker");
+  const rect = tracker.getBoundingClientRect();
+  
+  const position = {
+    x: Math.round(rect.left),
+    y: Math.round(rect.top)
+  };
+  
+  localStorage.setItem("pigsTracker_position", JSON.stringify(position));
+}
+
+function getSavedPosition() {
+  try {
+    const saved = localStorage.getItem("pigsTracker_position");
+    return saved ? JSON.parse(saved) : null;
+  } catch {
+    return null;
+  }
+}
+// ---------------------------------------------------------------------------
 // Message parsing – extract game data into local state
 // ---------------------------------------------------------------------------
 
@@ -292,5 +388,6 @@ function setText(id, value) {
 // ---------------------------------------------------------------------------
 
 document.addEventListener('DOMContentLoaded', () => {
+    initializeDragging();
     window.parent.postMessage({ type: 'getNamedData', keys: WATCHED_KEYS }, '*');
 });
